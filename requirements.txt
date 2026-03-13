@@ -1,1 +1,12 @@
-fastapi==0.115.0
+fastapi
+uvicorn[standard]
+python-dotenv
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
+openai
+google-generativeai
+python-dateutil
+pendulum
+httpx

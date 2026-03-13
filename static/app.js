@@ -8,6 +8,7 @@ const logEl = document.getElementById("log");
 const latencyEl = document.getElementById("latency");
 const statusDotEl = document.getElementById("status-dot");
 const statusTextEl = document.getElementById("status-text");
+const modelSelectEl = document.getElementById("model-select");
 
 let sessionId = null;
 let isSending = false;
@@ -55,7 +56,11 @@ async function callBackend(message) {
     const resp = await fetch("/api/converse", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({
+        message,
+        session_id: sessionId,
+        model: modelSelectEl ? modelSelectEl.value : undefined,
+      }),
     });
 
     const duration = performance.now() - started;

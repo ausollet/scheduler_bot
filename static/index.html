@@ -52,7 +52,13 @@
         <section class="panel">
           <div class="panel-header">
             <div class="panel-title">Voice & Telemetry</div>
-            <div class="panel-tag">Local Browser STT/TTS</div>
+            <div class="panel-tag">
+              <label for="model-select">LLM</label>
+              <select id="model-select">
+                <option value="models/gemini-2.5-flash">Gemini 2.5 flash (default)</option>
+                <option value="gpt-4o-mini">OpenAI GPT‑4o mini</option>
+              </select>
+            </div>
           </div>
           <div class="voice-panel">
             <div class="voice-main">
