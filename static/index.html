@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Smart Scheduler AI Agent</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <div class="title-block">
+          <div class="orb" aria-hidden="true"></div>
+          <div>
+            <h1>Smart Scheduler Agent</h1>
+            <div class="subtitle">Python · FastAPI · Voice-enabled</div>
+          </div>
+        </div>
+        <div class="status-pill" id="status-pill">
+          <span class="status-dot idle" id="status-dot"></span>
+          <span id="status-text">Idle</span>
+        </div>
+      </header>
+      <main>
+        <section class="panel left">
+          <div class="panel-header">
+            <div class="panel-title">Conversation</div>
+            <div class="panel-tag">Prototype</div>
+          </div>
+          <div class="conversation" id="conversation">
+            <div class="message bot">
+              <div class="message-meta">Agent</div>
+              <div>
+                Hi, I’m your scheduling assistant. You can type or press the mic and
+                say things like “I need to schedule a meeting.”
+              </div>
+            </div>
+          </div>
+          <div class="input-row">
+            <input
+              id="text-input"
+              class="text-input"
+              type="text"
+              placeholder="Type a message about the meeting you want to schedule…"
+            />
+            <button id="send-btn" class="send-btn">
+              <span class="send-icon">➤</span>
+              <span>Send</span>
+            </button>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div class="panel-title">Voice & Telemetry</div>
+            <div class="panel-tag">Local Browser STT/TTS</div>
+          </div>
+          <div class="voice-panel">
+            <div class="voice-main">
+              <div>
+                <div class="voice-label">Voice conversation</div>
+                <div class="voice-sub" id="voice-sub">
+                  Press the mic to start listening. Your browser will handle speech recognition and
+                  playback.
+                </div>
+              </div>
+              <div class="voice-controls">
+                <button id="mic-btn" class="mic-btn idle" title="Toggle microphone">
+                  <div class="wave"></div>
+                  <span class="mic-icon" id="mic-icon">🎤</span>
+                </button>
+              </div>
+            </div>
+            <div class="chip-row">
+              <div class="chip accent">LLM Orchestration (Python backend)</div>
+              <div class="chip">Context-aware scheduling</div>
+              <div class="chip">Calendar API (next)</div>
+              <div class="chip">Sub-800ms target latency</div>
+            </div>
+            <div class="latency" id="latency">Last round-trip: –</div>
+            <div class="log" id="log"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
