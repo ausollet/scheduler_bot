@@ -9,6 +9,8 @@ const latencyEl = document.getElementById("latency");
 const statusDotEl = document.getElementById("status-dot");
 const statusTextEl = document.getElementById("status-text");
 const modelSelectEl = document.getElementById("model-select");
+const connectBtnEl = document.getElementById("connect-btn");
+const connectStatusEl = document.getElementById("connect-status");
 
 let sessionId = null;
 let isSending = false;
@@ -26,6 +28,51 @@ function appendLog(message, isError = false) {
 function setStatus(text, active = false) {
   statusTextEl.textContent = text;
   statusDotEl.classList.toggle("idle", !active);
+}
+
+function setConnectStatus(connected) {
+  connectStatusEl.textContent = connected ? "Connected" : "Not connected";
+  connectBtnEl.textContent = connected ? "Logout" : "Connect calendar";
+  connectBtnEl.classList.toggle("connected", connected);
+}
+
+async function refreshConnectStatus() {
+  if (!sessionId) return;
+  try {
+    const resp = await fetch(`/api/connected?session_id=${encodeURIComponent(sessionId)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    setConnectStatus(Boolean(data.connected));
+  } catch (err) {
+    // ignore
+  }
+}
+
+async function loadModels() {
+  try {
+    const resp = await fetch("/api/models");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const select = modelSelectEl;
+    select.innerHTML = ""; // Clear existing
+    // Add options for each category
+    for (const [category, models] of Object.entries(data)) {
+      if (category === "default_model") continue;
+      models.forEach(model => {
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = `${model} (${category})`;
+        if (model === data.default_model) {
+          option.textContent += " (default)";
+        }
+        select.appendChild(option);
+      });
+    }
+    // Set default
+    select.value = data.default_model;
+  } catch (err) {
+    console.error("Error loading models:", err);
+  }
 }
 
 function addMessage({ role, text }) {
@@ -60,6 +107,7 @@ async function callBackend(message) {
         message,
         session_id: sessionId,
         model: modelSelectEl ? modelSelectEl.value : undefined,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }),
     });
 
@@ -177,9 +225,59 @@ micBtnEl.addEventListener("click", () => {
   toggleMic();
 });
 
+function parseQueryParams() {
+  return Object.fromEntries(new URLSearchParams(window.location.search));
+}
+
+connectBtnEl.addEventListener("click", async () => {
+  const sid = sessionId || "session-1";
+  const isConnected = connectBtnEl.classList.contains("connected");
+  if (isConnected) {
+    // Logout
+    console.log("Logout button clicked");
+    try {
+      const resp = await fetch(`/api/logout?session_id=${encodeURIComponent(sid)}`, {
+        method: "POST",
+      });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      setConnectStatus(false);
+      appendLog("Logged out successfully");
+    } catch (err) {
+      appendLog("Error logging out: " + err.message, true);
+    }
+  } else {
+    // Connect
+    console.log("Connect calendar button clicked");
+    try {
+      const resp = await fetch(`/api/auth_url?session_id=${encodeURIComponent(sid)}`);
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      // Navigate to Google's consent screen
+      window.location.href = data.auth_url;
+    } catch (err) {
+      appendLog("Error starting OAuth: " + err.message, true);
+    }
+  }
+});
+
 window.addEventListener("load", () => {
+  const params = parseQueryParams();
+  if (params.session_id) {
+    sessionId = params.session_id;
+  }
+  // Default to disconnected and then refresh to see if we are connected.
+  setConnectStatus(false);
+  if (params.connected) {
+    setConnectStatus(true);
+  }
   setupSTT();
   setStatus("Idle", false);
   appendLog("UI ready.");
+  refreshConnectStatus();
+  loadModels();
 });
 

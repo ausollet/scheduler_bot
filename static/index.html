@@ -26,6 +26,10 @@
           <div class="panel-header">
             <div class="panel-title">Conversation</div>
             <div class="panel-tag">Prototype</div>
+            <div class="panel-tag">
+              <button id="connect-btn" class="connect-btn">Connect calendar</button>
+              <span id="connect-status" class="connect-status">Not connected</span>
+            </div>
           </div>
           <div class="conversation" id="conversation">
             <div class="message bot">
@@ -55,8 +59,7 @@
             <div class="panel-tag">
               <label for="model-select">LLM</label>
               <select id="model-select">
-                <option value="models/gemini-2.5-flash">Gemini 2.5 flash (default)</option>
-                <option value="gpt-4o-mini">OpenAI GPT‑4o mini</option>
+                <!-- Options populated dynamically -->
               </select>
             </div>
           </div>
