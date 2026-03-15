@@ -198,6 +198,9 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             if event:
                 update_state(session_id, {"booked": True})
                 print("[DEBUG] Confirmed slot booked successfully")
+                sess = get_or_create_session(session_id)
+                sess["state"]["confirmed_slot"] = None
+                sess["state"]["proposed_slots"] = None
             else:
                 print("[DEBUG] Booking failed, finding next slot")
                 # Booking failed, find next available slot
