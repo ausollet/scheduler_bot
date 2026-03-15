@@ -242,7 +242,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
     if state.get("action") == "find" and google_creds:
         meetings = find_meetings(
             title=state.get("title"),
-            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d").date() if state.get("preferred_date") else None,
+            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
             start_time=datetime.combine(datetime.today(), datetime.strptime(state.get("preferred_time"), "%H:%M").time()) if state.get("preferred_time") else None,
             user_timezone=user_timezone,
             credentials=google_creds,
@@ -261,7 +261,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
     if state.get("action") == "delete" and google_creds:
         meetings = find_meetings(
             title=state.get("title"),
-            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d").date() if state.get("preferred_date") else None,
+            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
             credentials=google_creds,
         )
 
