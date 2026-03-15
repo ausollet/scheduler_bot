@@ -129,6 +129,25 @@ def find_available_slots(
     return slots
 
 
+def is_slot_free(start_iso: str, end_iso: str, credentials: dict, calendar_id: Optional[str] = None) -> bool:
+    service = _get_service(credentials)
+    if service is None:
+        return False
+
+    calendar_id = calendar_id or get_calendar_id()
+    body = {
+        "timeMin": start_iso,
+        "timeMax": end_iso,
+        "items": [{"id": calendar_id}],
+    }
+    try:
+        resp = service.freebusy().query(body=body).execute()
+        busy_times = resp["calendars"][calendar_id].get("busy", [])
+        return len(busy_times) == 0
+    except Exception as e:
+        print(f"[ERROR] Freebusy query failed: {e}")
+        return False
+
 def create_event(
     start_iso: str,
     end_iso: str,
@@ -140,6 +159,11 @@ def create_event(
 ) -> Optional[dict]:
     """Create a calendar event. Returns the event dict or None on failure."""
     print(f"[DEBUG] Creating event: {title} from {start_iso} to {end_iso}")
+
+    if not is_slot_free(start_iso, end_iso, credentials, calendar_id):
+        print("[DEBUG] Slot is already busy, cannot create event")
+        return None
+
     service = _get_service(credentials)
     if service is None:
         print("[DEBUG] No calendar service for event creation")
