@@ -350,7 +350,7 @@ async def get_auth_url(session_id: Optional[str] = None, request: Request = None
     """Return an authorization URL the client can redirect the user to."""
     session_id = session_id or "session-1"
 	public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
-	
+
 	if not public_domain:
 		redirect_uri = request.url_for("oauth2callback", _scheme="https")
 	else:
