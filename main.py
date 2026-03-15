@@ -8,7 +8,14 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from calendar_service import find_available_slots, create_event
+from calendar_service import (
+    find_available_slots,
+    create_event,
+    find_meetings,
+    delete_event,
+    update_event_time,
+)
+
 from conversation import (
     _format_slot,
     append_message,
@@ -116,7 +123,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
 
     google_creds = get_google_credentials(session_id)
 
-    if chosen and not state.get("confirmed_slot") and google_creds and state.get("title"):
+    if state.get("action") == "schedule" and chosen and not state.get("confirmed_slot") and google_creds and state.get("title"):
         title = state.get("title") or "Scheduled meeting"
         reminder_minutes = state.get("reminder_minutes") or 15
         event = create_event(
@@ -131,7 +138,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
         # else keep proposed_slots so the LLM can ask to retry
 
     # If we have enough to search and no confirmed booking yet, query calendar.
-    if not state.get("confirmed_slot") and state.get("duration_minutes"):
+    if state.get("action") == "schedule" and not state.get("confirmed_slot") and state.get("duration_minutes"):
         if not google_creds:
             # Prompt the user to connect their Google account.
             reply = (
@@ -173,7 +180,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
     # After LLM updates, check if we need to book
     state = get_state(session_id)
     print(state)
-    if state.get("confirmed_slot") and not state.get("booked") and state.get("title"):
+    if state.get("action") == "schedule" and state.get("confirmed_slot") and not state.get("booked") and state.get("title"):
         google_creds = get_google_credentials(session_id)
         if google_creds:
             chosen = state["confirmed_slot"]
@@ -193,7 +200,11 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             else:
                 print("[DEBUG] Booking failed, finding next slot")
                 # Booking failed, find next available slot
-                window = state_to_search_window(state)
+                if state.get("after_event_title") or state.get("before_event_title") or state.get("between_event_titles"):
+                    window = derive_window_from_events(state)
+                else:
+                    window = state_to_search_window(state)
+
                 if window:
                     taken_start = chosen["start"]
                     all_slots = find_available_slots(
@@ -226,6 +237,93 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                         print("[DEBUG] No alternative slots found")
                 else:
                     reply += " (Booking failed, please try again.)"
+
+    if state.get("action") == "find" and google_creds:
+        meetings = find_meetings(
+            title=state.get("title"),
+            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d").date() if state.get("preferred_date") else None,
+            start_time=datetime.combine(datetime.today(), datetime.strptime(state.get("preferred_time"), "%H:%M").time()) if state.get("preferred_time") else None,
+            user_timezone=user_timezone,
+            credentials=google_creds,
+        )
+
+        if meetings:
+            formatted = "\n".join(
+                f"{m['title']} at {m['start']}" for m in meetings[:]
+            )
+            reply = f"I found these meetings:\n{formatted}"
+        else:
+            reply = "I couldn't find any matching meetings."
+
+        update_state(session_id, {"search_results": meetings})
+
+    if state.get("action") == "delete" and google_creds:
+        meetings = find_meetings(
+            title=state.get("title"),
+            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d").date() if state.get("preferred_date") else None,
+            credentials=google_creds,
+        )
+
+        if not meetings:
+            reply = "I couldn't find a meeting matching that."
+
+        else:
+            event = meetings[0]
+            success = delete_event(event["id"], credentials=google_creds)
+
+            if success:
+                reply = f"I cancelled the meeting '{event['title']}'."
+            else:
+                reply = "I couldn't cancel the meeting."
+
+    if state.get("action") == "reschedule" and google_creds:
+
+        meetings = find_meetings(
+            title=state.get("title"),
+            date=None,
+            credentials=google_creds,
+        )
+
+        if not meetings:
+            reply = "I couldn't find the meeting you want to move."
+
+        else:
+            event = meetings[0]
+
+            if state.get("after_event_title") or state.get("before_event_title") or state.get("between_event_titles"):
+                window = derive_window_from_events(state)
+            else:
+                window = state_to_search_window(state)
+
+
+            if not window:
+                reply = "What time should I move it to?"
+
+            else:
+                slots = find_available_slots(
+                    state["duration_minutes"],
+                    window[0],
+                    window[1],
+                    credentials=google_creds,
+                )
+
+                if not slots:
+                    reply = "I couldn't find a free slot to move it."
+
+                else:
+                    slot = slots[0]
+
+                    updated = update_event_time(
+                        event["id"],
+                        slot["start"],
+                        slot["end"],
+                        credentials=google_creds,
+                    )
+
+                    if updated:
+                        reply = f"I moved '{event['title']}' to {slot['start']}."
+                    else:
+                        reply = "I couldn't reschedule that meeting."
 
     append_message(session_id, "assistant", reply)
     return ConverseResponse(reply=reply, session_id=session_id)
@@ -283,7 +381,9 @@ async def oauth2callback(request: Request, state: str, code: Optional[str] = Non
 
 # If you want to run with: python main.py
 if __name__ == "__main__":
+    import os
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
 

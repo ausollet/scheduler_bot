@@ -7,6 +7,7 @@ Set CALENDAR_ID to the calendar to query (e.g. primary or the service account's 
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+from dateutil.tz import gettz
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -162,4 +163,169 @@ def create_event(
         return event
     except Exception as e:
         print(f"[ERROR] Calendar create event error: {e}")
+        return None
+
+def find_meetings(
+    title: Optional[str] = None,
+    date: Optional[datetime] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    offset: Optional[int] = None,
+    user_timezone: str = "UTC",
+    calendar_id: Optional[str] = None,
+    max_results: int = 20,
+    credentials: Optional[dict] = None,
+) -> list[dict]:
+    """
+    Find meetings by title and/or date and/or time window.
+
+    Returns list of events:
+    {
+        "id": str,
+        "title": str,
+        "start": iso str,
+        "end": iso str,
+        "attendees": [emails]
+    }
+    """
+
+    print(f"[DEBUG] Searching meetings: title={title}, date={date}, start={start_time}, end={end_time}")
+
+    service = _get_service(credentials)
+    if service is None:
+        print("[DEBUG] No calendar service available")
+        return []
+
+    calendar_id = calendar_id or get_calendar_id()
+
+    date = date.replace(tzinfo=gettz(user_timezone)) if date else None
+    start_time = start_time.replace(tzinfo=gettz(user_timezone)) if start_time else None
+    end_time = end_time.replace(tzinfo=gettz(user_timezone)) if end_time else None
+
+    # Determine search window
+    time_min = None
+    time_max = None
+
+    if date:
+        start_of_day = datetime(date.year, date.month, date.day)
+        end_of_day = start_of_day + timedelta(days=1)
+        time_min = start_of_day.isoformat()
+        time_max = end_of_day.isoformat()
+
+    if start_time:
+        time_min = start_time.isoformat()
+
+    if end_time:
+        time_max = end_time.isoformat()
+
+    try:
+        print(f"[DEBUG] Querying events with timeMin={time_min} and timeMax={time_max} on calendar {calendar_id} for title containing '{title}' on the date {date}")
+        events_result = (
+            service.events()
+            .list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
+        )
+    except Exception as e:
+        print(f"[ERROR] Calendar search error: {e}")
+        return []
+
+    events = events_result.get("items", [])
+    results = []
+
+    for event in events:
+        summary = event.get("summary", "")
+        
+        # Filter by title if provided
+        if title and title.lower() not in summary.lower():
+            continue
+
+        start = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date")
+        end = event.get("end", {}).get("dateTime") or event.get("end", {}).get("date")
+
+        attendees = []
+        if "attendees" in event:
+            attendees = [a.get("email") for a in event["attendees"] if a.get("email")]
+
+        results.append({
+            "id": event.get("id"),
+            "title": summary,
+            "start": start,
+            "end": end,
+            "attendees": attendees,
+        })
+
+    print(f"[DEBUG] Found {len(results)} meetings")
+    return results
+
+def delete_event(
+    event_id: str,
+    calendar_id: Optional[str] = None,
+    credentials: Optional[dict] = None,
+) -> bool:
+    """
+    Delete (cancel) a calendar event.
+
+    Returns True if successful, False otherwise.
+    """
+
+    print(f"[DEBUG] Deleting event: {event_id}")
+
+    service = _get_service(credentials)
+    if service is None:
+        print("[DEBUG] No calendar service available")
+        return False
+
+    calendar_id = calendar_id or get_calendar_id()
+
+    try:
+        service.events().delete(
+            calendarId=calendar_id,
+            eventId=event_id
+        ).execute()
+
+        print("[DEBUG] Event deleted successfully")
+        return True
+
+    except Exception as e:
+        print(f"[ERROR] Calendar delete event error: {e}")
+        return False
+
+def update_event_time(
+    event_id: str,
+    start_iso: str,
+    end_iso: str,
+    calendar_id: Optional[str] = None,
+    credentials: Optional[dict] = None,
+) -> Optional[dict]:
+
+    service = _get_service(credentials)
+    if service is None:
+        return None
+
+    calendar_id = calendar_id or get_calendar_id()
+
+    body = {
+        "start": {"dateTime": start_iso, "timeZone": "UTC"},
+        "end": {"dateTime": end_iso, "timeZone": "UTC"},
+    }
+
+    try:
+        event = service.events().patch(
+            calendarId=calendar_id,
+            eventId=event_id,
+            body=body,
+            sendUpdates="all"
+        ).execute()
+
+        return event
+
+    except Exception as e:
+        print(f"[ERROR] Reschedule failed: {e}")
         return None

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from dateutil.tz import gettz
+from calendar_service import find_meetings
 
 # In-memory session store: session_id -> { "messages": [...], "state": {...} }
 _sessions: dict[str, dict] = {}
@@ -15,15 +16,23 @@ _sessions: dict[str, dict] = {}
 DEFAULT_STATE = {
     "duration_minutes": None,
     "preferred_date": None,
+    "preferred_time": None,
     "preferred_time_of_day": None,
     "excluded_days": [],
     "proposed_slots": None,
     "confirmed_slot": None,
     "title": None,
     "reminder_minutes": None,
+    "action": "schedule", # "find", "schedule", "delete", "reschedule"
+    "after_event_title": None,
+    "before_event_title": None,
+    "between_event_titles": None,
+    "offset": None,
+    "current_datetime": datetime.now(timezone.utc).isoformat(),
     # OAuth credentials are stored here when the user connects a Google account.
     # This is a plain dict suitable for reconstruction via google.oauth2.credentials.Credentials.
     "google_credentials": None,
+    
 }
 
 
@@ -322,3 +331,47 @@ def state_to_search_window(state: dict) -> Optional[tuple[datetime, datetime]]:
     if window_end <= window_start:
         window_end = window_start + timedelta(hours=10)
     return (window_start, window_end)
+
+def derive_window_from_events(state):
+
+    if state.get("after_event_title"):
+
+        events = find_meetings(
+            title=state["after_event_title"],
+            date=state.get("preferred_date"),
+            credentials=state.get("google_credentials")
+        )
+
+        if events:
+            ref = events[0]
+            start = datetime.fromisoformat(ref["end"])
+            end = start + timedelta(hours=6)
+            return start, end
+
+    if state.get("before_event_title"):
+
+        events = find_meetings(
+            title=state["before_event_title"],
+            date=state.get("preferred_date"),
+            credentials=state.get("google_credentials")
+        )
+
+        if events:
+            ref = events[0]
+            end = datetime.fromisoformat(ref["start"])
+            start = end - timedelta(hours=6)
+            return start, end
+
+    if state.get("between_event_titles"):
+
+        t1, t2 = state["between_event_titles"]
+
+        e1 = find_meetings(title=t1, credentials=state.get("google_credentials"))
+        e2 = find_meetings(title=t2, credentials=state.get("google_credentials"))
+
+        if e1 and e2:
+            start = datetime.fromisoformat(e1[0]["end"])
+            end = datetime.fromisoformat(e2[0]["start"])
+            return start, end
+
+    return None

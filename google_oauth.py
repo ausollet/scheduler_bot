@@ -20,7 +20,7 @@ _flows: dict[str, Flow] = {}
 
 def get_client_secrets_path() -> str:
     # Allow override via env var, otherwise use bundled JSON.
-    return os.getenv("GOOGLE_OAUTH_CLIENT_SECRETS", "client_secret_974973237904-brptaflclnns28kk0fv1k86gb9lo43jo.apps.googleusercontent.com.json")
+    return os.getenv("GOOGLE_OAUTH_CLIENT_SECRETS")
 
 
 def _make_flow(redirect_uri: str) -> Flow:
