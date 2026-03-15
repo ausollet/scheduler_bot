@@ -349,12 +349,12 @@ async def list_models() -> dict:
 async def get_auth_url(session_id: Optional[str] = None, request: Request = None) -> dict:
     """Return an authorization URL the client can redirect the user to."""
     session_id = session_id or "session-1"
-	public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
 
-	if not public_domain:
-		redirect_uri = request.url_for("oauth2callback", _scheme="https")
-	else:
-		redirect_uri = 'https://' + public_domain + '/api/oauth2callback'
+    if not public_domain:
+        redirect_uri = request.url_for("oauth2callback", _scheme="https")
+    else:
+        redirect_uri = 'https://' + public_domain + '/api/oauth2callback'
     auth_url = create_authorization_url(session_id, redirect_uri)
     return {"auth_url": auth_url, "session_id": session_id}
 
