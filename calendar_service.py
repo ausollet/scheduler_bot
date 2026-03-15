@@ -53,7 +53,7 @@ def _get_service(credentials: Optional[dict] = None):
     creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if not creds_path:
         return None
-    creds = service_account.Credentials.from_service_account_info(json.loads(creds_path), scopes=SCOPES)
+    creds = service_account.Credentials.from_service_account_info(creds_path, scopes=SCOPES)
     _service = build("calendar", "v3", credentials=creds)
     return _service
 
