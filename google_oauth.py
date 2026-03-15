@@ -26,7 +26,7 @@ def get_client_secrets_path() -> str:
 
 def _make_flow(redirect_uri: str) -> Flow:
     client_secrets = get_client_secrets_path()
-    if client_secrets:
+    if not client_secrets:
         raise FileNotFoundError(f"OAuth client secrets file not found: {client_secrets}")
     flow = Flow.from_client_config(
         client_secrets,
