@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 from dateutil.tz import gettz
+import json
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -50,9 +51,9 @@ def _get_service(credentials: Optional[dict] = None):
     if _service is not None:
         return _service
     creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if not creds_path or not os.path.isfile(creds_path):
+    if not creds_path:
         return None
-    creds = service_account.Credentials.from_service_account_file(creds_path, scopes=SCOPES)
+    creds = service_account.Credentials.from_service_account_file(json.loads(creds_path), scopes=SCOPES)
     _service = build("calendar", "v3", credentials=creds)
     return _service
 

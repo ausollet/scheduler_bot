@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+import json
 
 # Scopes required for calendar access (read/write events)
 SCOPES = [
@@ -25,10 +26,10 @@ def get_client_secrets_path() -> str:
 
 def _make_flow(redirect_uri: str) -> Flow:
     client_secrets = get_client_secrets_path()
-    if not os.path.isfile(client_secrets):
+    if client_secrets:
         raise FileNotFoundError(f"OAuth client secrets file not found: {client_secrets}")
     flow = Flow.from_client_secrets_file(
-        client_secrets,
+        json.loads(client_secrets),
         scopes=SCOPES,
         redirect_uri=redirect_uri,
     )
