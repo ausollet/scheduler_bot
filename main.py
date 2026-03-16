@@ -132,6 +132,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             chosen["end"],
             title=title,
             reminder_minutes=reminder_minutes,
+            time_zone = user_timezone,
             credentials=google_creds,
         )
         if event:
@@ -193,6 +194,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                 chosen["end"],
                 title=title,
                 reminder_minutes=reminder_minutes,
+                time_zone = user_timezone,
                 credentials=google_creds,
             )
             update_state(session_id, {

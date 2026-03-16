@@ -155,6 +155,7 @@ def create_event(
     calendar_id: Optional[str] = None,
     attendees: Optional[list[str]] = None,
     reminder_minutes: int = 15,
+    time_zone: str = 'UTC',
     credentials: Optional[dict] = None,
 ) -> Optional[dict]:
     """Create a calendar event. Returns the event dict or None on failure."""
@@ -172,8 +173,8 @@ def create_event(
     calendar_id = calendar_id or get_calendar_id()
     body = {
         "summary": title,
-        "start": {"dateTime": start_iso, "timeZone": "UTC"},
-        "end": {"dateTime": end_iso, "timeZone": "UTC"},
+        "start": {"dateTime": start_iso, "timeZone": time_zone},
+        "end": {"dateTime": end_iso, "timeZone": time_zone},
     }
     if reminder_minutes > 0:
         body["reminders"] = {
