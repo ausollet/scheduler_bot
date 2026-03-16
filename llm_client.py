@@ -55,7 +55,7 @@ SCHEDULING_SYSTEM_PROMPT = (
 
 
     "Use current date and time to resolve relative dates and times. Unless mentioned, always assume the year, month, and time of booking to be relative."
-    "Use the user's timezone for interpreting relative dates and times. "
+    "Ignore the timezone while interpreting relative dates and times. "
     "If key details are missing (e.g. duration, day, time of day, title, reminder), ask for them one at a time. Reminder defaults to 15 minutes if not specified."
     "When 'Proposed slots' appear in the state, offer those times to the user (e.g. 'I have 2:00 PM or 4:30 PM on Tuesday. Which works for you?'). "
     "When the user picks one (e.g. 'first one', '2 PM'), confirm that the meeting is booked. "

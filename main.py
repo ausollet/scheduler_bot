@@ -30,6 +30,7 @@ from conversation import (
     state_to_search_window,
     set_google_credentials,
     update_state,
+    derive_window_from_events,
 )
 from google_oauth import (
     create_authorization_url,
