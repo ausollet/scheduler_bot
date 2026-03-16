@@ -310,48 +310,48 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
         else:
             event = meetings[0]
 
-        if not state.get("duration_minutes"):
-            start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
-            end = datetime.fromisoformat(event["end"].replace("Z", "+00:00"))
-            duration_minutes = int((end - start).total_seconds() / 60)
-            update_state(session_id, {"duration_minutes": duration_minutes})
-            state = get_state(session_id) 
+            if not state.get("duration_minutes"):
+                start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
+                end = datetime.fromisoformat(event["end"].replace("Z", "+00:00"))
+                duration_minutes = int((end - start).total_seconds() / 60)
+                update_state(session_id, {"duration_minutes": duration_minutes})
+                state = get_state(session_id) 
 
-            if state.get("after_event_title") or state.get("before_event_title") or state.get("between_event_titles"):
-                window = derive_window_from_events(state)
-            else:
-                window = state_to_search_window(state)
+                if state.get("after_event_title") or state.get("before_event_title") or state.get("between_event_titles"):
+                    window = derive_window_from_events(state)
+                else:
+                    window = state_to_search_window(state)
 
 
-            if not window:
-                reply = "What time should I move it to?"
-
-            else:
-                slots = find_available_slots(
-                    state["duration_minutes"],
-                    window[0],
-                    window[1],
-                    credentials=google_creds,
-                )
-
-                if not slots:
-                    reply = "I couldn't find a free slot to move it."
+                if not window:
+                    reply = "What time should I move it to?"
 
                 else:
-                    slot = slots[0]
-
-                    updated = update_event_time(
-                        event["id"],
-                        slot["start"],
-                        slot["end"],
-                        time_zone=user_timezone,
+                    slots = find_available_slots(
+                        state["duration_minutes"],
+                        window[0],
+                        window[1],
                         credentials=google_creds,
                     )
 
-                    if updated:
-                        reply = f"I moved '{event['title']}' to {slot['start']}."
+                    if not slots:
+                        reply = "I couldn't find a free slot to move it."
+
                     else:
-                        reply = "I couldn't reschedule that meeting."
+                        slot = slots[0]
+
+                        updated = update_event_time(
+                            event["id"],
+                            slot["start"],
+                            slot["end"],
+                            time_zone=user_timezone,
+                            credentials=google_creds,
+                        )
+
+                        if updated:
+                            reply = f"I moved '{event['title']}' to {slot['start']}."
+                        else:
+                            reply = "I couldn't reschedule that meeting."
         sess = get_or_create_session(session_id)
         sess["state"]["duration_minutes"] = None
         sess["state"]["confirmed_slot"] = None
