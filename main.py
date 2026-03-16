@@ -267,6 +267,13 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             reply = f"I found these meetings:\n{formatted}"
         else:
             reply = "I couldn't find any matching meetings."
+        update_state(session_id, {
+            "duration_minutes": None,
+            "confirmed_slot": None,
+            "proposed_slots": None,
+            "preferred_time": None,
+            "preferred_time_of_day": None,
+        })
 
         update_state(session_id, {"search_results": meetings})
 
@@ -288,6 +295,13 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                 reply = f"I cancelled the meeting '{event['title']}'."
             else:
                 reply = "I couldn't cancel the meeting."
+        update_state(session_id, {
+            "duration_minutes": None,
+            "confirmed_slot": None,
+            "proposed_slots": None,
+            "preferred_time": None,
+            "preferred_time_of_day": None,
+        })
 
     if state.get("action") == "reschedule" and google_creds:
 
@@ -337,6 +351,13 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                         reply = f"I moved '{event['title']}' to {slot['start']}."
                     else:
                         reply = "I couldn't reschedule that meeting."
+        update_state(session_id, {
+            "duration_minutes": None,
+            "confirmed_slot": None,
+            "proposed_slots": None,
+            "preferred_time": None,
+            "preferred_time_of_day": None,
+        })
 
     append_message(session_id, "assistant", reply)
     return ConverseResponse(reply=reply, session_id=session_id)
