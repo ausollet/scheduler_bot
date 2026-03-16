@@ -28,7 +28,7 @@ DEFAULT_STATE = {
     "before_event_title": None,
     "between_event_titles": None,
     "offset": None,
-    "current_datetime": datetime.now(timezone.utc).isoformat(),
+    "current_datetime": datetime.now().isoformat(),
     # OAuth credentials are stored here when the user connects a Google account.
     # This is a plain dict suitable for reconstruction via google.oauth2.credentials.Credentials.
     "google_credentials": None,
@@ -205,7 +205,7 @@ def format_state_for_prompt(state: dict, tz_str: str = "UTC") -> str:
     if state.get("reminder_minutes"):
         parts.append(f"Reminder: {state['reminder_minutes']} minutes before")
     proposed = state.get("proposed_slots")
-    if proposed is not None:
+    if proposed is not None and type(proposed[0]) is not str:
         if not proposed:
             parts.append("Proposed slots: None found in the requested window. Suggest alternative days or times.")
         else:
@@ -226,13 +226,13 @@ def format_state_for_prompt(state: dict, tz_str: str = "UTC") -> str:
 
 
 def _format_slot(slot: dict, tz_str: str = "UTC") -> str:
-    start = slot.get("start", "")
+    start = slot.get("start", "") if isinstance(slot, dict) else slot
     try:
         dt_utc = datetime.fromisoformat(start.replace("Z", "+00:00"))
         if dt_utc.tzinfo is None:
             dt_utc = dt_utc.replace(tzinfo=timezone.utc)
         user_tz = gettz(tz_str) or timezone.utc
-        dt_local = dt_utc.astimezone(user_tz)
+        dt_local = dt_utc.replace(tzinfo=user_tz)
         return dt_local.strftime("%a %b %d at %I:%M %p")
     except Exception:
         return start
@@ -257,7 +257,7 @@ def match_user_choice_to_slot(user_message: str, proposed_slots: list[dict]) -> 
         return proposed_slots[2]
     # Try to match by time "2 pm", "2:00"
     for slot in proposed_slots:
-        start = slot.get("start", "")
+        start = slot.get("start", "") if isinstance(slot, dict) else slot
         try:
             dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
             hour12 = dt.hour % 12 or 12
@@ -317,6 +317,14 @@ def state_to_search_window(state: dict) -> Optional[tuple[datetime, datetime]]:
                 window_start = (now + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
                 window_end = window_start.replace(hour=18, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
 
+    # Handle explicit time (HH:MM format)
+    preferred_time = state.get("preferred_time_of_day")
+    if preferred_time and re.match(r"^\d{2}:\d{2}$", preferred_time):
+        hour, minute = map(int, preferred_time.split(":"))
+        window_start = window_start.replace(hour=hour, minute=minute, second=0, microsecond=0, tzinfo=timezone.utc)
+        window_end = window_start + timedelta(hours=2)  # 2-hour search window
+        return (window_start, window_end)
+
     time_of_day = state.get("preferred_time_of_day")
     if time_of_day == "morning":
         window_start = window_start.replace(hour=8, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
@@ -338,28 +346,31 @@ def derive_window_from_events(state):
 
         events = find_meetings(
             title=state["after_event_title"],
-            date=state.get("preferred_date"),
+            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
             credentials=state.get("google_credentials")
         )
 
         if events:
             ref = events[0]
             start = datetime.fromisoformat(ref["end"])
-            end = start + timedelta(hours=6)
+            duration = state.get("duration_minutes", 60)  # default to 1 hour if duration not specified
+            end = start + timedelta(minutes=duration + 30)  # duration + 30 min buffer
             return start, end
 
     if state.get("before_event_title"):
 
         events = find_meetings(
             title=state["before_event_title"],
-            date=state.get("preferred_date"),
+            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
             credentials=state.get("google_credentials")
         )
 
         if events:
             ref = events[0]
             end = datetime.fromisoformat(ref["start"])
-            start = end - timedelta(hours=6)
+            duration = state.get("duration_minutes", 60)
+            start = end - timedelta(minutes=duration + 30)  # duration + 30 min buffer
+
             return start, end
 
     if state.get("between_event_titles"):

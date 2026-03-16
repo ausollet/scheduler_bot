@@ -38,7 +38,6 @@ from google_oauth import (
     exchange_code_for_credentials,
 )
 from llm_client import (
-    OPENAI_FALLBACK_MODEL,
     generate_reply_with_context,
     get_default_model,
     get_gemini_models,
@@ -125,21 +124,6 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
 
     google_creds = get_google_credentials(session_id)
 
-    if state.get("action") == "schedule" and chosen and not state.get("confirmed_slot") and google_creds and state.get("title"):
-        title = state.get("title") or "Scheduled meeting"
-        reminder_minutes = state.get("reminder_minutes") or 15
-        event = create_event(
-            chosen["start"],
-            chosen["end"],
-            title=title,
-            reminder_minutes=reminder_minutes,
-            time_zone = user_timezone,
-            credentials=google_creds,
-        )
-        if event:
-            update_state(session_id, {"confirmed_slot": chosen, "proposed_slots": None})
-        # else keep proposed_slots so the LLM can ask to retry
-
     # If we have enough to search and no confirmed booking yet, query calendar.
     if state.get("action") == "schedule" and not state.get("confirmed_slot") and state.get("duration_minutes"):
         if not google_creds:
@@ -183,7 +167,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
     # After LLM updates, check if we need to book
     state = get_state(session_id)
     print(state)
-    if state.get("action") == "schedule" and state.get("confirmed_slot") and not state.get("booked") and state.get("title"):
+    if state.get("action") == "schedule" and state.get("confirmed_slot") and state.get("title"):
         google_creds = get_google_credentials(session_id)
         if google_creds:
             chosen = state["confirmed_slot"]
@@ -198,19 +182,20 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                 time_zone = user_timezone,
                 credentials=google_creds,
             )
-            update_state(session_id, {
-                "booked": None,
-            })
             if event:
-                update_state(session_id, {"booked": True})
                 print("[DEBUG] Confirmed slot booked successfully")
-                update_state(session_id, {
-                    "duration_minutes": None,
-                    "confirmed_slot": None,
-                    "proposed_slots": None,
-                    "preferred_time": None,
-                    "preferred_time_of_day": None,
-                })
+                sess = get_or_create_session(session_id)
+                sess["state"]["duration_minutes"] = None
+                sess["state"]["confirmed_slot"] = None
+                sess["state"]["proposed_slots"] = None
+                sess["state"]["preferred_time"] = None
+                sess["state"]["preferred_time_of_day"] = None
+                sess["state"]["title"] = None
+                sess["state"]["action"] = None
+                sess["state"]["after_event_title"] = None
+                sess["state"]["before_event_title"] = None
+                sess["state"]["between_event_titles"] = None
+                sess["state"]["preferred_date"] = None
             else:
                 print("[DEBUG] Booking failed, finding next slot")
                 # Booking failed, find next available slot
@@ -256,7 +241,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
         meetings = find_meetings(
             title=state.get("title"),
             date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
-            start_time=datetime.combine(datetime.today(), datetime.strptime(state.get("preferred_time"), "%H:%M").time()) if state.get("preferred_time") else None,
+            start_time=datetime.combine(datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else datetime.today(), datetime.strptime(state.get("preferred_time"), "%H:%M").time()) if state.get("preferred_time") else None,
             user_timezone=user_timezone,
             credentials=google_creds,
         )
@@ -268,15 +253,18 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             reply = f"I found these meetings:\n{formatted}"
         else:
             reply = "I couldn't find any matching meetings."
-        update_state(session_id, {
-            "duration_minutes": None,
-            "confirmed_slot": None,
-            "proposed_slots": None,
-            "preferred_time": None,
-            "preferred_time_of_day": None,
-        })
-
-        update_state(session_id, {"search_results": meetings})
+        sess = get_or_create_session(session_id)
+        sess["state"]["duration_minutes"] = None
+        sess["state"]["confirmed_slot"] = None
+        sess["state"]["proposed_slots"] = None
+        sess["state"]["preferred_time"] = None
+        sess["state"]["preferred_time_of_day"] = None
+        sess["state"]["title"] = None
+        sess["state"]["action"] = None
+        sess["state"]["after_event_title"] = None
+        sess["state"]["before_event_title"] = None
+        sess["state"]["between_event_titles"] = None
+        sess["state"]["preferred_date"] = None
 
     if state.get("action") == "delete" and google_creds:
         meetings = find_meetings(
@@ -296,19 +284,23 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                 reply = f"I cancelled the meeting '{event['title']}'."
             else:
                 reply = "I couldn't cancel the meeting."
-        update_state(session_id, {
-            "duration_minutes": None,
-            "confirmed_slot": None,
-            "proposed_slots": None,
-            "preferred_time": None,
-            "preferred_time_of_day": None,
-        })
+        sess = get_or_create_session(session_id)
+        sess["state"]["duration_minutes"] = None
+        sess["state"]["confirmed_slot"] = None
+        sess["state"]["proposed_slots"] = None
+        sess["state"]["preferred_time"] = None
+        sess["state"]["preferred_time_of_day"] = None
+        sess["state"]["title"] = None
+        sess["state"]["action"] = None
+        sess["state"]["after_event_title"] = None
+        sess["state"]["before_event_title"] = None
+        sess["state"]["between_event_titles"] = None
+        sess["state"]["preferred_date"] = None
 
     if state.get("action") == "reschedule" and google_creds:
-
         meetings = find_meetings(
             title=state.get("title"),
-            date=None,
+            date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
             credentials=google_creds,
         )
 
@@ -317,6 +309,13 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
 
         else:
             event = meetings[0]
+
+        if not state.get("duration_minutes"):
+            start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(event["end"].replace("Z", "+00:00"))
+            duration_minutes = int((end - start).total_seconds() / 60)
+            update_state(session_id, {"duration_minutes": duration_minutes})
+            state = get_state(session_id) 
 
             if state.get("after_event_title") or state.get("before_event_title") or state.get("between_event_titles"):
                 window = derive_window_from_events(state)
@@ -345,6 +344,7 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                         event["id"],
                         slot["start"],
                         slot["end"],
+                        time_zone=user_timezone,
                         credentials=google_creds,
                     )
 
@@ -352,13 +352,18 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                         reply = f"I moved '{event['title']}' to {slot['start']}."
                     else:
                         reply = "I couldn't reschedule that meeting."
-        update_state(session_id, {
-            "duration_minutes": None,
-            "confirmed_slot": None,
-            "proposed_slots": None,
-            "preferred_time": None,
-            "preferred_time_of_day": None,
-        })
+        sess = get_or_create_session(session_id)
+        sess["state"]["duration_minutes"] = None
+        sess["state"]["confirmed_slot"] = None
+        sess["state"]["proposed_slots"] = None
+        sess["state"]["preferred_time"] = None
+        sess["state"]["preferred_time_of_day"] = None
+        sess["state"]["title"] = None
+        sess["state"]["action"] = None
+        sess["state"]["after_event_title"] = None
+        sess["state"]["before_event_title"] = None
+        sess["state"]["between_event_titles"] = None
+        sess["state"]["preferred_date"] = None
 
     append_message(session_id, "assistant", reply)
     return ConverseResponse(reply=reply, session_id=session_id)
@@ -375,7 +380,6 @@ async def list_models() -> dict:
     return {
         "default_model": default_model,
         "gemini": gemini_models,
-        "openai": [OPENAI_FALLBACK_MODEL],
         "dumbbot": ["dumbbot"],
     }
 

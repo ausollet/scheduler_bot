@@ -4,13 +4,10 @@ import os
 from typing import List, Optional
 
 import google.generativeai as genai
-from openai import OpenAI
 
 
 DEFAULT_GEMINI_MODEL = "models/gemini-2.5-flash"
-OPENAI_FALLBACK_MODEL = "gpt-4o-mini"
 
-_openai_client: Optional[OpenAI] = None
 _gemini_configured = False
 _gemini_models_cached: Optional[List[str]] = None
 _gemini_default_model: Optional[str] = None
@@ -42,7 +39,7 @@ SCHEDULING_SYSTEM_PROMPT = (
     "- reminder_minutes\n\n"
 
     "When finding meetings set action='find'.\n"
-    "If wanting a meeting before/after another meeting, set offset accordingly, in minutes (e.g. offset=-30 for 30 minutes before).\n"
+    "If wanting a meeting some time before/after another meeting, set offset accordingly, in minutes (e.g. offset=-30 for 30 minutes before).\n"
     "When deleting meetings set action='delete'.\n"
     "When rescheduling meetings set action='reschedule'.\n\n"
 
@@ -54,11 +51,11 @@ SCHEDULING_SYSTEM_PROMPT = (
     "When a User wants to schedule a meeting before/after/or in between two events, update state with the before_event_title, after_event_title, or between_event_titles accordingly" 
 
 
-    "Use current date and time to resolve relative dates and times. Unless mentioned, always assume the year, month, and time of booking to be relative."
+    "Use urrent_datetime to resolve relative dates and times. Unless mentioned, always assume the year, month, and time of booking to be relative."
     "Ignore the timezone while interpreting relative dates and times. "
     "If key details are missing (e.g. duration, day, time of day, title, reminder), ask for them one at a time. Reminder defaults to 15 minutes if not specified."
     "When 'Proposed slots' appear in the state, offer those times to the user (e.g. 'I have 2:00 PM or 4:30 PM on Tuesday. Which works for you?'). "
-    "When the user picks one (e.g. 'first one', '2 PM'), confirm that the meeting is booked. "
+    "When the user picks one (e.g. 'first one', '2 PM'), update confirmed_slot and confirm that the meeting is booked. "
     "If the state is missing details, try to infer them from the user message and include them in a STATE_UPDATE even if you still need to ask clarifying questions. "
     "If the state says 'None found in the requested window', suggest trying another day or time. "
     "Keep replies short and natural. Do not invent times; only use the proposed slots from the state when present. "
@@ -76,8 +73,7 @@ def normalize_model_name(name: Optional[str]) -> str:
     Normalize arbitrary UI choices into internal model identifiers.
 
     For now we support:
-    - \"gemini\" / \"models/gemini-2.5-flash\"
-    - \"openai\" / \"gpt-4o-mini\"
+    - gemini models
     """
     if not name:
         return DEFAULT_GEMINI_MODEL
@@ -87,8 +83,6 @@ def normalize_model_name(name: Optional[str]) -> str:
     if key in {"gemini", "models/gemini-2.5-flash"}:
         print(f"Default Gemini model: {DEFAULT_GEMINI_MODEL}")
         return DEFAULT_GEMINI_MODEL
-    if key in {"openai", "gpt-4o", "gpt-4o-mini"}:
-        return OPENAI_FALLBACK_MODEL
     if key == "dumbbot":
         return "dumbbot"
 
@@ -161,17 +155,6 @@ def get_default_model() -> str:
         _list_gemini_models()
     return _gemini_default_model or DEFAULT_GEMINI_MODEL
 
-
-def _ensure_openai() -> Optional[OpenAI]:
-    global _openai_client
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-    if _openai_client is None:
-        _openai_client = OpenAI(api_key=api_key)
-    return _openai_client
-
-
 def _call_gemini(model: str, user_message: str) -> Optional[str]:
     return _call_gemini_prompt(model, f"{SYSTEM_PROMPT}\n\nUser: {user_message}\nAssistant:")
 
@@ -192,30 +175,7 @@ def _call_gemini_prompt(model: str, full_prompt: str) -> Optional[str]:
             for name in available:
                 print(f"  - {name}")
         return None
-
-
-def _call_openai(model: str, user_message: str) -> Optional[str]:
-    return _call_openai_messages(
-        model,
-        [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-    )
-
-
-def _call_openai_messages(model: str, messages: list[dict]) -> Optional[str]:
-    client = _ensure_openai()
-    if client is None:
         return None
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.3,
-    )
-    choice = resp.choices[0].message
-    return (choice.content or "").strip()
-
 
 def generate_reply_stub(model: Optional[str], user_message: str, state_str: str = "", history: list[dict] = None) -> str:
     """
@@ -331,16 +291,10 @@ def generate_reply_with_context(
     print(f"[DEBUG] Current state: {state_str}")
     print(f"[DEBUG] Conversation history: {history}")
     try:
-        if normalized.startswith("models/gemini"):
+        if normalized.startswith("models/"):
             prompt = _build_scheduling_prompt(state_str, history, user_message, user_timezone)
             print(f"[DEBUG] Gemini prompt: {prompt}")
             text = _call_gemini_prompt(normalized, prompt)
-            if text:
-                return _parse_llm_response(text)
-        elif normalized.startswith("gpt"):
-            messages = _build_scheduling_messages(state_str, history, user_message, user_timezone)
-            print(f"[DEBUG] OpenAI messages: {messages}")
-            text = _call_openai_messages(normalized, messages)
             if text:
                 return _parse_llm_response(text)
         elif normalized == "dumbbot":
@@ -364,10 +318,6 @@ def generate_reply(model: Optional[str], user_message: str) -> str:
     try:
         if normalized.startswith("models/gemini"):
             text = _call_gemini(normalized, user_message)
-            if text:
-                return text
-        elif normalized.startswith("gpt"):
-            text = _call_openai(normalized, user_message)
             if text:
                 return text
     except Exception as exc:

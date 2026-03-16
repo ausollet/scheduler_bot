@@ -82,8 +82,8 @@ def find_available_slots(
         return []
 
     calendar_id = calendar_id or get_calendar_id()
-    time_min = window_start.isoformat()
-    time_max = window_end.isoformat()
+    time_min = window_start.replace(tzinfo=gettz(timezone)).isoformat()
+    time_max = window_end.replace(tzinfo=gettz(timezone)).isoformat()
 
     body = {
         "timeMin": time_min,
@@ -100,18 +100,18 @@ def find_available_slots(
     # Sort busy intervals by start
     busy_sorted = sorted(busy_list, key=lambda x: x["start"])
     slots = []
-    current = window_start
+    current = window_start.replace(tzinfo=gettz(timezone))
     duration_delta = timedelta(minutes=duration_minutes)
 
     for b in busy_sorted:
-        b_start = datetime.fromisoformat(b["start"].replace("Z", "+00:00"))
-        b_end = datetime.fromisoformat(b["end"].replace("Z", "+00:00"))
+        b_start = datetime.fromisoformat(b["start"].replace("Z", "+00:00")).replace(tzinfo=gettz(timezone))
+        b_end = datetime.fromisoformat(b["end"].replace("Z", "+00:00")).replace(tzinfo=gettz(timezone))
         # Free gap from current to b_start
         if b_start > current and (b_start - current) >= duration_delta:
             slot_end = current + duration_delta
             slots.append({
-                "start": current.isoformat(),
-                "end": slot_end.isoformat(),
+                "start": current.replace(tzinfo=gettz(timezone)).isoformat(),
+                "end": slot_end.replace(tzinfo=gettz(timezone)).isoformat(),
             })
             if len(slots) >= max_slots:
                 return slots
@@ -121,23 +121,23 @@ def find_available_slots(
     if window_end > current and (window_end - current) >= duration_delta:
         slot_end = current + duration_delta
         slots.append({
-            "start": current.isoformat(),
-            "end": slot_end.isoformat(),
+            "start": current.replace(tzinfo=gettz(timezone)).isoformat(),
+            "end": slot_end.replace(tzinfo=gettz(timezone)).isoformat(),
         })
 
     print(f"[DEBUG] Found {len(slots)} available slots")
     return slots
 
 
-def is_slot_free(start_iso: str, end_iso: str, credentials: dict, calendar_id: Optional[str] = None) -> bool:
+def is_slot_free(start_iso: str, end_iso: str, time_zone, credentials: dict, calendar_id: Optional[str] = None) -> bool:
     service = _get_service(credentials)
     if service is None:
         return False
 
     calendar_id = calendar_id or get_calendar_id()
     body = {
-        "timeMin": start_iso,
-        "timeMax": end_iso,
+        "timeMin": datetime.fromisoformat(start_iso).replace(tzinfo=gettz(time_zone)).isoformat(),
+        "timeMax": datetime.fromisoformat(end_iso).replace(tzinfo=gettz(time_zone)).isoformat(),
         "items": [{"id": calendar_id}],
     }
     try:
@@ -161,7 +161,7 @@ def create_event(
     """Create a calendar event. Returns the event dict or None on failure."""
     print(f"[DEBUG] Creating event: {title} from {start_iso} to {end_iso}")
 
-    if not is_slot_free(start_iso, end_iso, credentials, calendar_id):
+    if not is_slot_free(start_iso, end_iso, time_zone, credentials, calendar_id):
         print("[DEBUG] Slot is already busy, cannot create event")
         return None
 
@@ -173,9 +173,10 @@ def create_event(
     calendar_id = calendar_id or get_calendar_id()
     body = {
         "summary": title,
-        "start": {"dateTime": start_iso, "timeZone": time_zone},
-        "end": {"dateTime": end_iso, "timeZone": time_zone},
+        "start": {"dateTime": datetime.fromisoformat(start_iso).replace(tzinfo=gettz(time_zone)).isoformat(), "timeZone": time_zone},
+        "end": {"dateTime": datetime.fromisoformat(end_iso).replace(tzinfo=gettz(time_zone)).isoformat(), "timeZone": time_zone},
     }
+    print(body)
     if reminder_minutes > 0:
         body["reminders"] = {
             "useDefault": False,
@@ -224,9 +225,9 @@ def find_meetings(
 
     calendar_id = calendar_id or get_calendar_id()
 
-    date = date.replace(tzinfo=gettz(user_timezone)) if date else None
-    start_time = start_time.replace(tzinfo=gettz(user_timezone)) if start_time else None
-    end_time = end_time.replace(tzinfo=gettz(user_timezone)) if end_time else None
+    date = date if date else None
+    start_time = start_time if start_time else None
+    end_time = end_time if end_time else None
 
     # Determine search window
     time_min = None
@@ -239,10 +240,10 @@ def find_meetings(
         time_max = end_of_day.isoformat()
 
     if start_time:
-        time_min = start_time.isoformat()
+        time_min = start_time.replace(tzinfo=gettz(user_timezone)).isoformat()
 
     if end_time:
-        time_max = end_time.isoformat()
+        time_max = end_time.replace(tzinfo=gettz(user_timezone)).isoformat()
 
     try:
         print(f"[DEBUG] Querying events with timeMin={time_min} and timeMax={time_max} on calendar {calendar_id} for title containing '{title}' on the date {date}")
@@ -327,6 +328,7 @@ def update_event_time(
     event_id: str,
     start_iso: str,
     end_iso: str,
+    time_zone,
     calendar_id: Optional[str] = None,
     credentials: Optional[dict] = None,
 ) -> Optional[dict]:
@@ -338,8 +340,8 @@ def update_event_time(
     calendar_id = calendar_id or get_calendar_id()
 
     body = {
-        "start": {"dateTime": start_iso, "timeZone": "UTC"},
-        "end": {"dateTime": end_iso, "timeZone": "UTC"},
+        "start": {"dateTime": datetime.fromisoformat(start_iso).replace(tzinfo=gettz(time_zone)).isoformat(), "timeZone": "UTC"},
+        "end": {"dateTime": datetime.fromisoformat(end_iso).replace(tzinfo=gettz(time_zone)).isoformat(), "timeZone": "UTC"},
     }
 
     try:
