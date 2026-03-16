@@ -51,6 +51,8 @@ SCHEDULING_SYSTEM_PROMPT = (
     "- preferred_date\n"
     "- preferred_time_of_day\n\n"
 
+    "When a User wants to schedule a meeting before/after/or in between two events, update state with the before_event_title, after_event_title, or between_event_titles accordingly" 
+
 
     "Use current date and time to resolve relative dates and times. Unless mentioned, always assume the year, month, and time of booking to be relative."
     "Use the user's timezone for interpreting relative dates and times. "
