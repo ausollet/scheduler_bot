@@ -195,10 +195,10 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                 reminder_minutes=reminder_minutes,
                 credentials=google_creds,
             )
-                sess = get_or_create_session(session_id)
-                sess["state"]["confirmed_slot"] = None
-                sess["state"]["proposed_slots"] = None
-                sess["state"]["booked"] = None
+            sess = get_or_create_session(session_id)
+            sess["state"]["confirmed_slot"] = None
+            sess["state"]["proposed_slots"] = None
+            sess["state"]["booked"] = None
             if event:
                 update_state(session_id, {"booked": True})
                 print("[DEBUG] Confirmed slot booked successfully")
