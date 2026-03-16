@@ -232,10 +232,10 @@ def find_meetings(
     time_max = None
 
     if date:
-        start_of_day = datetime(date.year, date.month, date.day)
+        start_of_day = datetime(date.year, date.month, date.day, tzinfo=gettz(user_timezone))
         end_of_day = start_of_day + timedelta(days=1)
-        time_min = start_of_day.isoformat()
-        time_max = end_of_day.isoformat()
+        time_min = start_of_day.isoformat().replace(tzinfo=gettz(user_timezone))
+        time_max = end_of_day.isoformat().replace(tzinfo=gettz(user_timezone))
 
     if start_time:
         time_min = start_time.isoformat()
