@@ -1,7 +1,7 @@
 import ast
 import json
 import os
-from typing import List, Optional
+from typing import AsyncGenerator, List, Optional
 
 import google.generativeai as genai
 
@@ -273,6 +273,103 @@ def _parse_llm_response(text: str) -> dict:
                 return {"reply": text, "updates": {}}
     print("[DEBUG] No STATE_UPDATE found in response")
     return {"reply": text, "updates": {}}
+
+
+class StreamingStateFilter:
+    """
+    Filters STATE_UPDATE: {json} out of a streaming LLM response so it never
+    appears in the displayed text or TTS output.
+    """
+    MARKER = "STATE_UPDATE:"
+
+    def __init__(self):
+        self._display_buf = ""
+        self._tail_buf = ""
+
+    def feed(self, chunk: str) -> str:
+        """Returns the display-safe portion of chunk; holds back STATE_UPDATE."""
+        combined = self._tail_buf + chunk
+        marker_pos = combined.find(self.MARKER)
+        if marker_pos != -1:
+            safe = combined[:marker_pos]
+            self._display_buf += safe
+            self._tail_buf = combined[marker_pos:]
+            return safe
+        hold = len(self.MARKER) - 1
+        safe = combined[:-hold] if len(combined) > hold else ""
+        self._tail_buf = combined[-hold:] if len(combined) > hold else combined
+        self._display_buf += safe
+        return safe
+
+    def finalize(self) -> dict:
+        """Parse STATE_UPDATE from buffered tail. Returns updates dict."""
+        tail = self._tail_buf
+        if self.MARKER in tail:
+            update_str = tail.rsplit(self.MARKER, 1)[1].strip()
+            try:
+                return json.loads(update_str)
+            except json.JSONDecodeError:
+                try:
+                    return ast.literal_eval(update_str)
+                except (ValueError, SyntaxError):
+                    pass
+        return {}
+
+    @property
+    def full_display_text(self) -> str:
+        return self._display_buf
+
+
+async def _call_gemini_prompt_stream(model: str, full_prompt: str):
+    """Async generator yielding raw text chunks from Gemini streaming."""
+    if not _ensure_gemini():
+        return
+    try:
+        m = genai.GenerativeModel(model)
+        response = await m.generate_content_async(full_prompt, stream=True)
+        async for chunk in response:
+            text = getattr(chunk, "text", None)
+            if text:
+                yield text
+    except Exception as exc:
+        print(f"Gemini streaming call failed for model '{model}': {exc}")
+        return
+
+
+async def stream_reply_with_context(
+    model: Optional[str],
+    user_message: str,
+    state_str: str,
+    history: list[dict],
+    user_timezone: str = "UTC",
+) -> AsyncGenerator[dict, None]:
+    """
+    Async generator. Yields dicts:
+      {"type": "chunk", "text": str}             -- display-safe LLM text fragments
+      {"type": "done", "updates": dict,
+       "full_reply": str}                        -- final event with parsed STATE_UPDATE
+    Falls back to generate_reply_with_context for non-Gemini models (single chunk + done).
+    """
+    normalized = normalize_model_name(model)
+    if not normalized.startswith("models/"):
+        result = generate_reply_with_context(model, user_message, state_str, history, user_timezone)
+        yield {"type": "chunk", "text": result["reply"]}
+        yield {"type": "done", "updates": result["updates"], "full_reply": result["reply"]}
+        return
+
+    prompt = _build_scheduling_prompt(state_str, history, user_message, user_timezone)
+    state_filter = StreamingStateFilter()
+    try:
+        async for raw_chunk in _call_gemini_prompt_stream(normalized, prompt):
+            display_text = state_filter.feed(raw_chunk)
+            if display_text:
+                yield {"type": "chunk", "text": display_text}
+        updates = state_filter.finalize()
+        yield {"type": "done", "updates": updates, "full_reply": state_filter.full_display_text}
+    except Exception as exc:
+        print(f"[ERROR] Streaming LLM error: {exc}")
+        yield {"type": "chunk", "text": "Sorry, I encountered an error. Please try again."}
+        yield {"type": "done", "updates": {}, "full_reply": ""}
 
 
 def generate_reply_with_context(

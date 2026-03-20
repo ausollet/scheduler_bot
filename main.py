@@ -1,10 +1,11 @@
+import json as _json
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
@@ -42,6 +43,7 @@ from llm_client import (
     get_default_model,
     get_gemini_models,
     normalize_model_name,
+    stream_reply_with_context,
 )
 
 
@@ -94,81 +96,90 @@ async def favicon():
 CONVERSATION_HISTORY_LIMIT = 20
 
 
-@app.post("/api/converse", response_model=ConverseResponse)
-async def converse(req: ConverseRequest) -> ConverseResponse:
-    """
-    Stateful conversation: session store holds message history and
-    extracted scheduling state; LLM gets state + history for slot-filling.
-    """
-    session_id = req.session_id or "session-1"
-    model_name = req.model or get_default_model()
-    user_timezone = req.timezone or "UTC"
+def _reset_scheduling_state(session_id: str) -> None:
+    sess = get_or_create_session(session_id)
+    for key in (
+        "duration_minutes", "confirmed_slot", "proposed_slots", "preferred_time",
+        "preferred_time_of_day", "title", "action", "after_event_title",
+        "before_event_title", "between_event_titles", "preferred_date",
+    ):
+        sess["state"][key] = None
 
+
+async def _prepare_session_for_llm(
+    session_id: str,
+    message: str,
+    model_name: str,
+    user_timezone: str,
+) -> tuple[str, list]:
+    """
+    Session init, dumbbot slot extraction, calendar slot search, state formatting.
+    Appends the user message to history and returns (state_str, history).
+    """
     get_or_create_session(session_id)
-    append_message(session_id, "user", req.message)
+    append_message(session_id, "user", message)
 
-    # If using the dumbbot proxy, still apply simple rule-based slot extraction.
-    # Otherwise, let the LLM parse the message and return STATE_UPDATE JSON.
     normalized_model = normalize_model_name(model_name)
     if normalized_model == "dumbbot":
-        updates = extract_slots_from_message(req.message)
+        updates = extract_slots_from_message(message)
         if updates:
             update_state(session_id, updates)
 
     state = get_state(session_id)
     print(f"[DEBUG] State after initial extraction: {state}")
 
-    # If user might be confirming one of the proposed slots, book it
     proposed = state.get("proposed_slots") or []
-    chosen = match_user_choice_to_slot(req.message, proposed)
+    match_user_choice_to_slot(message, proposed)
 
     google_creds = get_google_credentials(session_id)
 
-    # If we have enough to search and no confirmed booking yet, query calendar.
     if state.get("action") == "schedule" and not state.get("confirmed_slot") and state.get("duration_minutes"):
-        if not google_creds:
-            # Prompt the user to connect their Google account.
-            reply = (
-                "To look at your calendar and propose times, please connect your Google account "
-                "using the \"Connect calendar\" button."
-            )
-            return ConverseResponse(reply=reply, session_id=session_id)
-
-        window = state_to_search_window(state)
-        if window:
-            window_start, window_end = window
-            print(f"[DEBUG] Searching calendar for slots: {window_start} to {window_end}")
-            slots = find_available_slots(
-                state["duration_minutes"],
-                window_start,
-                window_end,
-                max_slots=5,
-                credentials=google_creds,
-            )
-            print(f"[DEBUG] Found slots: {slots}")
-            update_state(session_id, {"proposed_slots": slots})
+        if google_creds:
+            window = state_to_search_window(state)
+            if window:
+                window_start, window_end = window
+                print(f"[DEBUG] Searching calendar for slots: {window_start} to {window_end}")
+                slots = find_available_slots(
+                    state["duration_minutes"],
+                    window_start,
+                    window_end,
+                    max_slots=5,
+                    credentials=google_creds,
+                )
+                print(f"[DEBUG] Found slots: {slots}")
+                update_state(session_id, {"proposed_slots": slots})
 
     state = get_state(session_id)
     state_str = format_state_for_prompt(state, user_timezone)
     history = get_messages(session_id, last_n=CONVERSATION_HISTORY_LIMIT)
-    # Exclude the message we just appended so the model sees history only
     history = history[:-1] if history and history[-1].get("role") == "user" else history
+    return state_str, history
 
-    llm_result = generate_reply_with_context(
-        model_name, req.message, state_str, history, user_timezone
-    )
-    reply = llm_result["reply"]
-    updates = llm_result["updates"]
-    print(f"[DEBUG] LLM result: reply='{reply}', updates={updates}")
+
+async def _post_llm_processing(
+    session_id: str,
+    model_name: str,
+    user_timezone: str,
+    initial_reply: str,
+    updates: dict,
+) -> str:
+    """
+    Applies LLM state updates, runs calendar operations (booking/find/delete/reschedule).
+    Returns the final reply string (may differ from initial_reply).
+    Does NOT call append_message — the caller is responsible.
+    """
+    reply = initial_reply
+    google_creds = get_google_credentials(session_id)
+
+    print(f"[DEBUG] LLM updates: {updates}")
     if updates:
         update_state(session_id, updates)
         print(f"[DEBUG] State after LLM updates: {get_state(session_id)}")
 
-    # After LLM updates, check if we need to book
     state = get_state(session_id)
     print(state)
+
     if state.get("action") == "schedule" and state.get("confirmed_slot") and state.get("title"):
-        google_creds = get_google_credentials(session_id)
         if google_creds:
             chosen = state["confirmed_slot"]
             print(f"[DEBUG] Attempting to book confirmed slot: {chosen}")
@@ -179,26 +190,14 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                 chosen["end"],
                 title=title,
                 reminder_minutes=reminder_minutes,
-                time_zone = user_timezone,
+                time_zone=user_timezone,
                 credentials=google_creds,
             )
             if event:
                 print("[DEBUG] Confirmed slot booked successfully")
-                sess = get_or_create_session(session_id)
-                sess["state"]["duration_minutes"] = None
-                sess["state"]["confirmed_slot"] = None
-                sess["state"]["proposed_slots"] = None
-                sess["state"]["preferred_time"] = None
-                sess["state"]["preferred_time_of_day"] = None
-                sess["state"]["title"] = None
-                sess["state"]["action"] = None
-                sess["state"]["after_event_title"] = None
-                sess["state"]["before_event_title"] = None
-                sess["state"]["between_event_titles"] = None
-                sess["state"]["preferred_date"] = None
+                _reset_scheduling_state(session_id)
             else:
                 print("[DEBUG] Booking failed, finding next slot")
-                # Booking failed, find next available slot
                 if state.get("after_event_title") or state.get("before_event_title") or state.get("between_event_titles"):
                     window = derive_window_from_events(state)
                 else:
@@ -213,29 +212,28 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                         max_slots=10,
                         credentials=google_creds,
                     )
-                    next_slots = [s for s in all_slots if s["start"] != taken_start][:3]  # Get up to 3 alternatives
+                    next_slots = [s for s in all_slots if s["start"] != taken_start][:3]
                     if next_slots:
                         update_state(session_id, {"proposed_slots": next_slots, "confirmed_slot": None})
                         print(f"[DEBUG] Proposed alternative slots: {next_slots}")
-                        # Regenerate reply with LLM suggesting alternatives
                         state = get_state(session_id)
                         state_str = format_state_for_prompt(state, user_timezone)
                         history = get_messages(session_id, last_n=CONVERSATION_HISTORY_LIMIT)
-                        # Add a system message indicating booking failure
                         special_message = "The selected time slot is not available. Please suggest alternative times from the proposed slots."
                         llm_result = generate_reply_with_context(
                             model_name, special_message, state_str, history, user_timezone
                         )
                         reply = llm_result["reply"]
-                        updates = llm_result["updates"]
-                        if updates:
-                            update_state(session_id, updates)
+                        if llm_result["updates"]:
+                            update_state(session_id, llm_result["updates"])
                         print(f"[DEBUG] Alternative suggestion reply: {reply}")
                     else:
                         reply += " That time is taken, and no other slots found in the window. Please suggest another day or time."
                         print("[DEBUG] No alternative slots found")
                 else:
                     reply += " (Booking failed, please try again.)"
+
+    state = get_state(session_id)
 
     if state.get("action") == "find" and google_creds:
         meetings = find_meetings(
@@ -245,26 +243,12 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             user_timezone=user_timezone,
             credentials=google_creds,
         )
-
         if meetings:
-            formatted = "\n".join(
-                f"{m['title']} at {m['start']}" for m in meetings[:]
-            )
+            formatted = "\n".join(f"{m['title']} at {m['start']}" for m in meetings)
             reply = f"I found these meetings:\n{formatted}"
         else:
             reply = "I couldn't find any matching meetings."
-        sess = get_or_create_session(session_id)
-        sess["state"]["duration_minutes"] = None
-        sess["state"]["confirmed_slot"] = None
-        sess["state"]["proposed_slots"] = None
-        sess["state"]["preferred_time"] = None
-        sess["state"]["preferred_time_of_day"] = None
-        sess["state"]["title"] = None
-        sess["state"]["action"] = None
-        sess["state"]["after_event_title"] = None
-        sess["state"]["before_event_title"] = None
-        sess["state"]["between_event_titles"] = None
-        sess["state"]["preferred_date"] = None
+        _reset_scheduling_state(session_id)
 
     if state.get("action") == "delete" and google_creds:
         meetings = find_meetings(
@@ -272,30 +256,13 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
             credentials=google_creds,
         )
-
         if not meetings:
             reply = "I couldn't find a meeting matching that."
-
         else:
             event = meetings[0]
             success = delete_event(event["id"], credentials=google_creds)
-
-            if success:
-                reply = f"I cancelled the meeting '{event['title']}'."
-            else:
-                reply = "I couldn't cancel the meeting."
-        sess = get_or_create_session(session_id)
-        sess["state"]["duration_minutes"] = None
-        sess["state"]["confirmed_slot"] = None
-        sess["state"]["proposed_slots"] = None
-        sess["state"]["preferred_time"] = None
-        sess["state"]["preferred_time_of_day"] = None
-        sess["state"]["title"] = None
-        sess["state"]["action"] = None
-        sess["state"]["after_event_title"] = None
-        sess["state"]["before_event_title"] = None
-        sess["state"]["between_event_titles"] = None
-        sess["state"]["preferred_date"] = None
+            reply = f"I cancelled the meeting '{event['title']}'." if success else "I couldn't cancel the meeting."
+        _reset_scheduling_state(session_id)
 
     if state.get("action") == "reschedule" and google_creds:
         meetings = find_meetings(
@@ -303,29 +270,24 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
             date=datetime.strptime(state.get("preferred_date"), "%Y-%m-%d") if state.get("preferred_date") else None,
             credentials=google_creds,
         )
-
         if not meetings:
             reply = "I couldn't find the meeting you want to move."
-
         else:
             event = meetings[0]
-
             if not state.get("duration_minutes"):
                 start = datetime.fromisoformat(event["start"].replace("Z", "+00:00"))
                 end = datetime.fromisoformat(event["end"].replace("Z", "+00:00"))
                 duration_minutes = int((end - start).total_seconds() / 60)
                 update_state(session_id, {"duration_minutes": duration_minutes})
-                state = get_state(session_id) 
+                state = get_state(session_id)
 
                 if state.get("after_event_title") or state.get("before_event_title") or state.get("between_event_titles"):
                     window = derive_window_from_events(state)
                 else:
                     window = state_to_search_window(state)
 
-
                 if not window:
                     reply = "What time should I move it to?"
-
                 else:
                     slots = find_available_slots(
                         state["duration_minutes"],
@@ -333,13 +295,10 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                         window[1],
                         credentials=google_creds,
                     )
-
                     if not slots:
                         reply = "I couldn't find a free slot to move it."
-
                     else:
                         slot = slots[0]
-
                         updated = update_event_time(
                             event["id"],
                             slot["start"],
@@ -347,26 +306,120 @@ async def converse(req: ConverseRequest) -> ConverseResponse:
                             time_zone=user_timezone,
                             credentials=google_creds,
                         )
+                        reply = f"I moved '{event['title']}' to {slot['start']}." if updated else "I couldn't reschedule that meeting."
+        _reset_scheduling_state(session_id)
 
-                        if updated:
-                            reply = f"I moved '{event['title']}' to {slot['start']}."
-                        else:
-                            reply = "I couldn't reschedule that meeting."
-        sess = get_or_create_session(session_id)
-        sess["state"]["duration_minutes"] = None
-        sess["state"]["confirmed_slot"] = None
-        sess["state"]["proposed_slots"] = None
-        sess["state"]["preferred_time"] = None
-        sess["state"]["preferred_time_of_day"] = None
-        sess["state"]["title"] = None
-        sess["state"]["action"] = None
-        sess["state"]["after_event_title"] = None
-        sess["state"]["before_event_title"] = None
-        sess["state"]["between_event_titles"] = None
-        sess["state"]["preferred_date"] = None
+    return reply
 
-    append_message(session_id, "assistant", reply)
-    return ConverseResponse(reply=reply, session_id=session_id)
+
+def _sse(data: dict) -> str:
+    return f"data: {_json.dumps(data)}\n\n"
+
+
+@app.post("/api/converse", response_model=ConverseResponse)
+async def converse(req: ConverseRequest) -> ConverseResponse:
+    """
+    Stateful conversation: session store holds message history and
+    extracted scheduling state; LLM gets state + history for slot-filling.
+    """
+    session_id = req.session_id or "session-1"
+    model_name = req.model or get_default_model()
+    user_timezone = req.timezone or "UTC"
+
+    state_str, history = await _prepare_session_for_llm(session_id, req.message, model_name, user_timezone)
+
+    google_creds = get_google_credentials(session_id)
+    state = get_state(session_id)
+    if state.get("action") == "schedule" and not state.get("confirmed_slot") and state.get("duration_minutes") and not google_creds:
+        reply = (
+            "To look at your calendar and propose times, please connect your Google account "
+            "using the \"Connect calendar\" button."
+        )
+        append_message(session_id, "assistant", reply)
+        return ConverseResponse(reply=reply, session_id=session_id)
+
+    llm_result = generate_reply_with_context(model_name, req.message, state_str, history, user_timezone)
+    final_reply = await _post_llm_processing(
+        session_id, model_name, user_timezone, llm_result["reply"], llm_result["updates"]
+    )
+    append_message(session_id, "assistant", final_reply)
+    return ConverseResponse(reply=final_reply, session_id=session_id)
+
+
+@app.post("/api/converse/stream")
+async def converse_stream(req: ConverseRequest):
+    """
+    Streaming SSE endpoint. Sends LLM response chunks as they arrive, then
+    runs calendar post-processing, and signals completion.
+
+    Events:
+      {"type": "chunk", "text": str, "session_id": str}
+      {"type": "processing"}
+      {"type": "supplement", "text": str}   -- only if calendar ops changed the reply
+      {"type": "done", "session_id": str}
+      {"type": "error", "message": str}
+    """
+    session_id = req.session_id or "session-1"
+    model_name = req.model or get_default_model()
+    user_timezone = req.timezone or "UTC"
+
+    async def event_generator():
+        try:
+            state_str, history = await _prepare_session_for_llm(
+                session_id, req.message, model_name, user_timezone
+            )
+
+            google_creds = get_google_credentials(session_id)
+            state = get_state(session_id)
+            if state.get("action") == "schedule" and not state.get("confirmed_slot") and state.get("duration_minutes") and not google_creds:
+                no_creds_reply = (
+                    "To look at your calendar and propose times, please connect your Google account "
+                    "using the \"Connect calendar\" button."
+                )
+                yield _sse({"type": "chunk", "text": no_creds_reply, "session_id": session_id})
+                append_message(session_id, "assistant", no_creds_reply)
+                yield _sse({"type": "done", "session_id": session_id})
+                return
+
+            full_reply = ""
+            llm_updates = {}
+
+            async for event in stream_reply_with_context(
+                model_name, req.message, state_str, history, user_timezone
+            ):
+                if event["type"] == "chunk":
+                    full_reply += event["text"]
+                    yield _sse({"type": "chunk", "text": event["text"], "session_id": session_id})
+                elif event["type"] == "done":
+                    llm_updates = event.get("updates", {})
+                    if event.get("full_reply"):
+                        full_reply = event["full_reply"]
+
+            yield _sse({"type": "processing"})
+
+            final_reply = await _post_llm_processing(
+                session_id, model_name, user_timezone, full_reply, llm_updates
+            )
+
+            if final_reply != full_reply:
+                yield _sse({"type": "supplement", "text": final_reply})
+
+            append_message(session_id, "assistant", final_reply)
+            yield _sse({"type": "done", "session_id": session_id})
+
+        except Exception as exc:
+            print(f"[ERROR] Stream endpoint error: {exc}")
+            yield _sse({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/api/models")

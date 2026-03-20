@@ -16,6 +16,97 @@ let sessionId = null;
 let isSending = false;
 let isListening = false;
 let recognition = null;
+let _currentEventReader = null;
+let _llmReplied = false;          // true once "processing" SSE event arrives
+let _streamDone = Promise.resolve(); // resolves when the current stream fully completes
+let _streamDoneResolver = null;
+let micActive = false;            // true while mic mode is ON (survives processing/TTS)
+
+// --- TTS queue ---
+let _ttsQueue = [];
+let _ttsSpeaking = false;
+
+function cancelTTS() {
+  _ttsQueue = [];
+  _ttsSpeaking = false;
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+function enqueueSentence(text) {
+  if (!("speechSynthesis" in window) || !text.trim()) return;
+  _ttsQueue.push(text.trim());
+  if (!_ttsSpeaking) _speakNext();
+}
+
+function _speakNext() {
+  if (!_ttsQueue.length) {
+    _ttsSpeaking = false;
+    // TTS finished — resume listening if mic mode is still on
+    if (micActive) startListening();
+    return;
+  }
+  _ttsSpeaking = true;
+  const u = new SpeechSynthesisUtterance(_ttsQueue.shift());
+  u.rate = 1.02; u.pitch = 1.0; u.volume = 1.0;
+  u.onend = u.onerror = () => _speakNext();
+  window.speechSynthesis.speak(u);
+}
+
+function startListening() {
+  if (!recognition || isListening || !micActive) return;
+  try {
+    recognition.start();
+  } catch (_) {
+    // recognition may already be starting; ignore
+  }
+}
+
+// --- Sentence segmenter ---
+let _sentenceBuffer = "";
+const SENTENCE_END = /[.!?](?:\s|$)/;
+
+function flushSentences(newChunk, force = false) {
+  _sentenceBuffer += newChunk;
+  const sentences = [];
+  let remaining = _sentenceBuffer;
+  let match;
+  while ((match = SENTENCE_END.exec(remaining)) !== null) {
+    sentences.push(remaining.slice(0, match.index + match[0].length).trim());
+    remaining = remaining.slice(match.index + match[0].length);
+  }
+  _sentenceBuffer = remaining;
+  if (force && remaining.trim()) {
+    sentences.push(remaining.trim());
+    _sentenceBuffer = "";
+  }
+  return sentences;
+}
+
+// --- Streaming bubble helpers ---
+function addStreamingBubble() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "message bot streaming";
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+  meta.textContent = "Agent";
+  const body = document.createElement("div");
+  body.className = "message-body";
+  wrapper.appendChild(meta);
+  wrapper.appendChild(body);
+  conversationEl.appendChild(wrapper);
+  conversationEl.scrollTop = conversationEl.scrollHeight;
+  return body;
+}
+
+function appendToBubble(bodyEl, text) {
+  bodyEl.textContent += text;
+  conversationEl.scrollTop = conversationEl.scrollHeight;
+}
+
+function finalizeStreamingBubble(bodyEl) {
+  const wrapper = bodyEl.closest(".message");
+  if (wrapper) wrapper.classList.remove("streaming");
+}
 
 function appendLog(message, isError = false) {
   const div = document.createElement("div");
@@ -93,14 +184,44 @@ function addMessage({ role, text }) {
 }
 
 async function callBackend(message) {
-  if (!message.trim() || isSending) return;
+  if (!message.trim()) return;
+
+  if (_currentEventReader) {
+    if (!_llmReplied) {
+      // LLM still thinking → cancel and let both messages be seen together.
+      // The first user message is already in history; LLM will see both in sequence.
+      try { await _currentEventReader.cancel(); } catch (_) {}
+      _currentEventReader = null;
+      cancelTTS();
+      _sentenceBuffer = "";
+    } else {
+      // LLM has replied; calendar post-processing is running.
+      // Wait for it to finish cleanly before sending the new message.
+      appendLog("Waiting for current processing to finish…");
+      setStatus("Queued…", true);
+      await _streamDone;
+    }
+  }
+
+  // Pause mic while processing (will auto-resume after TTS)
+  if (isListening) recognition.stop();
+
+  // Reset per-stream state
+  _llmReplied = false;
+  _streamDone = new Promise(resolve => { _streamDoneResolver = resolve; });
+
+  cancelTTS();
+  _sentenceBuffer = "";
+
   isSending = true;
   sendBtnEl.disabled = true;
   const started = performance.now();
   setStatus("Thinking…", true);
 
+  const bubbleBody = addStreamingBubble();
+
   try {
-    const resp = await fetch("/api/converse", {
+    const resp = await fetch("/api/converse/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -111,40 +232,69 @@ async function callBackend(message) {
       }),
     });
 
-    const duration = performance.now() - started;
-    latencyEl.textContent = `Last round-trip: ${duration.toFixed(0)} ms`;
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`);
+    const reader = resp.body.getReader();
+    _currentEventReader = reader;
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true });
+
+      // SSE messages are separated by "\n\n"
+      const parts = sseBuffer.split("\n\n");
+      sseBuffer = parts.pop(); // keep incomplete last part
+
+      for (const part of parts) {
+        const dataLine = part.trim();
+        if (!dataLine.startsWith("data:")) continue;
+        let event;
+        try { event = JSON.parse(dataLine.slice("data:".length).trim()); } catch { continue; }
+
+        if (event.type === "chunk") {
+          appendToBubble(bubbleBody, event.text);
+          flushSentences(event.text).forEach(s => enqueueSentence(s));
+          if (event.session_id && !sessionId) sessionId = event.session_id;
+        } else if (event.type === "processing") {
+          _llmReplied = true;
+          setStatus("Processing…", true);
+        } else if (event.type === "supplement") {
+          // Post-LLM calendar ops produced a different reply
+          flushSentences("", true).forEach(s => enqueueSentence(s));
+          addMessage({ role: "bot", text: event.text });
+          enqueueSentence(event.text);
+        } else if (event.type === "done") {
+          sessionId = event.session_id || sessionId;
+          flushSentences("", true).forEach(s => enqueueSentence(s));
+          finalizeStreamingBubble(bubbleBody);
+          const duration = performance.now() - started;
+          latencyEl.textContent = `Last round-trip: ${duration.toFixed(0)} ms`;
+          appendLog(`Stream complete (session: ${sessionId})`);
+        } else if (event.type === "error") {
+          appendToBubble(bubbleBody, " [Error: " + event.message + "]");
+          finalizeStreamingBubble(bubbleBody);
+          appendLog("Backend error: " + event.message, true);
+        }
+      }
     }
-
-    const data = await resp.json();
-    sessionId = data.session_id || sessionId;
-    appendLog(`Backend reply (session: ${sessionId})`);
-
-    addMessage({ role: "bot", text: data.reply || "[empty reply]" });
-    speakText(data.reply || "");
   } catch (err) {
-    console.error(err);
-    appendLog("Error calling backend: " + err.message, true);
+    if (err.name !== "AbortError") {
+      console.error(err);
+      appendLog("Error calling backend: " + err.message, true);
+      appendToBubble(bubbleBody, "[Connection error]");
+      finalizeStreamingBubble(bubbleBody);
+    }
   } finally {
+    _streamDoneResolver?.();   // unblock any queued callBackend waiting on _streamDone
+    _streamDoneResolver = null;
+    _currentEventReader = null;
     isSending = false;
     sendBtnEl.disabled = false;
     setStatus(isListening ? "Listening…" : "Idle", isListening);
-  }
-}
-
-function speakText(text) {
-  if (!("speechSynthesis" in window) || !text) return;
-  try {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.02;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-  } catch (err) {
-    appendLog("TTS error: " + err.message, true);
   }
 }
 
@@ -191,7 +341,14 @@ function setupSTT() {
     micBtnEl.classList.remove("listening");
     micBtnEl.classList.add("idle");
     micIconEl.textContent = "🎤";
-    setStatus("Idle", false);
+    if (!micActive) {
+      setStatus("Idle", false);
+    }
+    // If mic mode is on but we stopped (e.g. after speaking), _speakNext
+    // will restart listening once TTS finishes. If no TTS queued, restart now.
+    if (micActive && !_ttsSpeaking && !_ttsQueue.length) {
+      startListening();
+    }
   };
 
   appendLog("SpeechRecognition initialized.");
@@ -199,11 +356,19 @@ function setupSTT() {
 
 function toggleMic() {
   if (!recognition) return;
-  if (isListening) {
+  if (micActive) {
+    // Turn mic mode OFF
+    micActive = false;
     recognition.stop();
-    return;
+    micBtnEl.classList.remove("listening");
+    micBtnEl.classList.add("idle");
+    micIconEl.textContent = "🎤";
+    setStatus("Idle", false);
+  } else {
+    // Turn mic mode ON
+    micActive = true;
+    startListening();
   }
-  recognition.start();
 }
 
 sendBtnEl.addEventListener("click", () => {

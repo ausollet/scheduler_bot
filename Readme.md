@@ -17,7 +17,11 @@ An intelligent, conversational AI assistant that seamlessly integrates with your
 - **Timezone Aware**: Schedules events accurately based on your local timezone.
 - **Stateful Conversations**: Remembers the context of your conversation for a smooth, multi-step scheduling experience.
 - **Multi-Model Support**: Powered by leading AI models with context carryover.
-- **Voice support**: Supports low latency TTS and STT. 
+- **Streaming Responses**: LLM replies stream word-by-word to the UI; TTS begins speaking as soon as the first complete sentence arrives, reducing perceived latency.
+- **Continuous Voice Mode**: Click the mic once to enter voice mode. The assistant automatically resumes listening after each reply — no need to re-click between turns.
+- **Smart Interrupt Handling**: Speak again while the assistant is still thinking or talking and it responds intelligently:
+  - If the LLM hasn't replied yet: cancels the current request and combines both messages so the LLM understands the updated intent.
+  - If calendar processing is underway: waits for it to finish cleanly, then sends your new message in context.
 
 ---
 
@@ -170,6 +174,26 @@ Handles all conversational interactions for scheduling.
 }
 ```
 
+---
+
+### Streaming Converse (used by default in the UI)
+
+Streams the LLM response token-by-token using Server-Sent Events, then runs calendar operations and signals completion.
+
+**Endpoint**: `POST /api/converse/stream`
+
+**Request Body**: Same as `/api/converse`.
+
+**Response**: `text/event-stream` — sequence of SSE events:
+
+| Event type | Payload | Description |
+|---|---|---|
+| `chunk` | `{"type": "chunk", "text": "...", "session_id": "..."}` | Incremental LLM text fragment (STATE_UPDATE filtered out) |
+| `processing` | `{"type": "processing"}` | LLM done; calendar operations starting |
+| `supplement` | `{"type": "supplement", "text": "..."}` | Sent only if calendar ops produced a different reply (e.g. booking failure) |
+| `done` | `{"type": "done", "session_id": "..."}` | Stream complete |
+| `error` | `{"type": "error", "message": "..."}` | Unhandled exception |
+
 **Endpoint**: `POST /api/models`
 
 **Example Response**:
@@ -214,17 +238,26 @@ RedirectResponse("https://schedulerbot-production.up.railway.app/api/oauth2callb
 The application follows a modular architecture that separates concerns for clarity and maintainability.
 
 ```
-User
+User (voice or text)
  ↓
-FastAPI Web Server (`main.py`)
+Browser — SpeechRecognition (STT) / continuous mic mode
  ↓
-LLM Client (`llm_client.py`)
+POST /api/converse/stream  (Server-Sent Events)
  ↓
-Conversation Manager (`conversation.py`)
+FastAPI Web Server (main.py)
+ ├─ _prepare_session_for_llm()   — session init, calendar slot search
+ ├─ stream_reply_with_context()  — Gemini async streaming, STATE_UPDATE filtered
+ └─ _post_llm_processing()       — booking / find / delete / reschedule
  ↓
-Calendar Service (`calendar_service.py`)
+LLM Client (llm_client.py) — StreamingStateFilter, Gemini generate_content_async
  ↓
-Google OAuth & API (`google_oauth.py`, `googleapiclient`)
+Conversation Manager (conversation.py)
+ ↓
+Calendar Service (calendar_service.py)
+ ↓
+Google OAuth & API (google_oauth.py, googleapiclient)
+ ↓
+Browser — incremental bubble rendering + TTS sentence queue (SpeechSynthesis)
 ```
 
 ---
@@ -238,7 +271,7 @@ scheduler_bot/
 ├── conversation.py        # Manages conversation state and logic
 ├── calendar_service.py    # Interfaces with the Google Calendar API
 ├── google_oauth.py        # Handles Google OAuth2 flow
-├── llm_client.py          # Interfaces with the language model
+├── llm_client.py          # Interfaces with the language model (streaming + batch)
 │
 ├── static/                # Contains frontend files
 │   ├── index.html         # Main HTML file
@@ -261,7 +294,7 @@ While the assistant is highly functional, here are some potential improvements f
 - **Isolated Sessions**: Ensure that each user has a private and separate conversation state.
 
 ### Multi-Action Support
-- Ensuring that agent can understand, seggregate, and perform multiple actions in a single sentence.
+- Ensuring that agent can understand, segregate, and perform multiple actions in a single sentence.
 
 ### Persistent State Management
 - **Database Integration**: Replace the current in-memory session store with a persistent database like Redis or a SQL database (e.g., PostgreSQL).
