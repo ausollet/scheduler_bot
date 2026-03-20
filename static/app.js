@@ -53,7 +53,7 @@ function _speakNext() {
 }
 
 function startListening() {
-  if (!recognition || isListening || !micActive) return;
+  if (!recognition || isListening || !micActive || isSending) return;
   try {
     recognition.start();
   } catch (_) {
@@ -203,9 +203,6 @@ async function callBackend(message) {
     }
   }
 
-  // Pause mic while processing (will auto-resume after TTS)
-  if (isListening) recognition.stop();
-
   // Reset per-stream state
   _llmReplied = false;
   _streamDone = new Promise(resolve => { _streamDoneResolver = resolve; });
@@ -295,6 +292,10 @@ async function callBackend(message) {
     isSending = false;
     sendBtnEl.disabled = false;
     setStatus(isListening ? "Listening…" : "Idle", isListening);
+    // Resume mic as soon as stream is done — user can speak to interrupt TTS
+    if (micActive) {
+      startListening();
+    }
   }
 }
 
@@ -346,7 +347,7 @@ function setupSTT() {
     }
     // If mic mode is on but we stopped (e.g. after speaking), _speakNext
     // will restart listening once TTS finishes. If no TTS queued, restart now.
-    if (micActive && !_ttsSpeaking && !_ttsQueue.length) {
+    if (micActive && !isSending) {
       startListening();
     }
   };
