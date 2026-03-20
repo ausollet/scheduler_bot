@@ -1,3 +1,4 @@
+import asyncio
 import json as _json
 from pathlib import Path
 from typing import Optional
@@ -316,6 +317,31 @@ def _sse(data: dict) -> str:
     return f"data: {_json.dumps(data)}\n\n"
 
 
+async def _with_keepalive(gen, interval: float = 8.0):
+    """Wraps an async generator, injecting SSE keepalive comments when the
+    real generator is slow (e.g. during calendar API calls). This prevents
+    Railway's nginx proxy from closing the connection mid-stream."""
+    it = gen.__aiter__()
+    pending = asyncio.ensure_future(it.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if done:
+                try:
+                    yield pending.result()
+                    pending = asyncio.ensure_future(it.__anext__())
+                except StopAsyncIteration:
+                    break
+            else:
+                yield ": keepalive\n\n"
+    finally:
+        pending.cancel()
+        try:
+            await pending
+        except (asyncio.CancelledError, StopAsyncIteration):
+            pass
+
+
 @app.post("/api/converse", response_model=ConverseResponse)
 async def converse(req: ConverseRequest) -> ConverseResponse:
     """
@@ -364,6 +390,8 @@ async def converse_stream(req: ConverseRequest):
     user_timezone = req.timezone or "UTC"
 
     async def event_generator():
+        # Flush nginx's internal buffer on Railway so chunks aren't held back
+        yield ": " + " " * 4096 + "\n\n"
         try:
             state_str, history = await _prepare_session_for_llm(
                 session_id, req.message, model_name, user_timezone
@@ -412,12 +440,11 @@ async def converse_stream(req: ConverseRequest):
             yield _sse({"type": "error", "message": str(exc)})
 
     return StreamingResponse(
-        event_generator(),
+        _with_keepalive(event_generator()),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 
